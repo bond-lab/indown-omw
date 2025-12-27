@@ -1,3 +1,10 @@
+# Emacs
+*~
+
+# build files and downloaded data
+etc/
+build/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
