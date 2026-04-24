@@ -1,0 +1,340 @@
+% Paper for Global WordNet Conference
+% Uses ACL style
+
+\documentclass[11pt]{article}
+\usepackage[hyperref]{acl2023}
+\usepackage{fontspec}
+\defaultfontfeatures{Ligatures=TeX}
+\setmainfont{TeX Gyre Termes}[Renderer=Harfbuzz,
+                              RawFeature={+fallback}]
+\setsansfont{TeX Gyre Heros}[Renderer=Harfbuzz,
+                             RawFeature={+fallback}]
+\setmonofont{TeX Gyre Cursor}[Renderer=Harfbuzz,
+                              RawFeature={+fallback} ]
+% Script fonts (must be installed on the system)
+\newfontfamily\devanagarifont{Noto Serif Devanagari}
+\newfontfamily\bengalifont{Noto Serif Bengali}
+
+% Auto-switch by Unicode block
+\usepackage{ucharclasses}
+\setTransitionsFor{Devanagari}{\devanagarifont}{\normalfont}
+\setTransitionsFor{Bengali}{\bengalifont}{\normalfont}
+
+%\usepackage{times}
+\usepackage{latexsym}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+
+% For better tables
+\usepackage{multirow}
+
+\title{Converting IndoWordNet to the Global WordNet Grid:\\Linking 18 Indian Languages to the Interlingual Index}
+
+\author{Francis Bond \\
+  Palacký University Olomouc \\
+  \texttt{bond@ieee.org}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present the conversion of IndoWordNet---a linked collection of wordnets for 18 Indian languages---to the standard OMW-LMF (Open Multilingual Wordnet Lexical Markup Framework) format with ILI (Interlingual Index) mappings.
+This integration enables these wordnets to interoperate with the Global WordNet Grid, facilitating cross-lingual NLP applications.
+We describe the mapping methodology, which handles three types of relationships between IndoWordNet synsets and Princeton WordNet: direct equivalences, hypernymic relationships, and cases where multiple Indian language concepts map to a single English concept.
+The conversion preserves IndoWordNet's rich internal semantic relations while adding standardized cross-lingual links.
+We release wordnets for Assamese, Bengali, Bodo, Gujarati, Hindi, Kannada, Kashmiri, Konkani, Malayalam, Marathi, Meitei, Nepali, Odia, Punjabi, Sanskrit, Tamil, Telugu, and Urdu.
+\end{abstract}
+
+\section{Introduction}
+
+IndoWordNet \cite{bhattacharyya2010indowordnet} is a major lexical resource covering 18 languages of the Indian subcontinent.
+Built using the expansion approach with Hindi as the pivot language, it contains over 40,000 synsets per language with rich semantic relations including hypernymy, meronymy, and various language-specific relations.
+
+Despite its size and coverage, IndoWordNet has not been fully integrated into the Global WordNet Grid \cite{bond2016cili}, limiting its interoperability with other multilingual resources.
+The primary challenge is that IndoWordNet was built against Princeton WordNet 2.1 \cite{fellbaum1998wordnet}, while the current standard uses the Collaborative Interlingual Index (CILI) based on Princeton WordNet 3.0.
+
+In this paper, we describe our methodology for converting IndoWordNet to the OMW-LMF format with proper ILI mappings.
+Our approach addresses three key challenges:
+\begin{enumerate}
+\item Mapping from PWN 2.1 offsets to PWN 3.0 and then to ILI identifiers
+\item Handling cases where the mapping relationship is hypernymic rather than equivalent
+\item Preserving lexical distinctions in Indian languages that English conflates
+\end{enumerate}
+
+We release converted wordnets for all 18 languages, integrated with the Open Multilingual Wordnet infrastructure.
+
+\section{Background}
+
+\subsection{IndoWordNet}
+
+IndoWordNet \cite{bhattacharyya2010indowordnet} was developed at IIT Bombay using the expansion approach, starting from Hindi WordNet and extending to other Indian languages.
+Each language wordnet is linked to the Hindi synsets, which in turn are mapped to Princeton WordNet 2.1.
+
+The resource includes rich semantic relations beyond the standard WordNet taxonomy:
+\begin{itemize}
+\item Taxonomic: hypernymy, hyponymy, troponymy
+\item Meronymy/Holonymy: member, part, portion, substance, location variants
+\item Other: also-see, similar, attribute, entailment, causation
+\item Language-specific: ability-verb, capability-verb, function-verb, modifies-verb, modifies-noun
+\end{itemize}
+
+Access to IndoWordNet is provided through the pyiwn Python API \cite{panjwani2018pyiwn}.
+
+\subsection{The Collaborative Interlingual Index}
+
+The Collaborative Interlingual Index (CILI) \cite{bond2016cili} provides language-neutral concept identifiers that enable wordnets in different languages to be linked.
+Each ILI identifier (e.g., \texttt{i105570}) corresponds to a concept, typically grounded in a Princeton WordNet 3.0 synset.
+
+The OMW-LMF format \cite{mccrae2019gwn} is the standard serialization for wordnets in the Global WordNet Association.
+It uses XML with ILI attributes on synsets to indicate cross-lingual equivalence.
+
+\subsection{WordNet Version Mapping}
+
+The mapping between Princeton WordNet versions is not straightforward.
+Between PWN 2.1 and 3.0, synsets were split, merged, deleted, and renumbered.
+We use the official mappings from Princeton \cite{daudert2018pwn21-30} which classify each 2.1-to-3.0 mapping as:
+\begin{itemize}
+\item \textbf{Equal}: Direct one-to-one correspondence
+\item \textbf{Hypernym}: The 3.0 synset is more general
+\item \textbf{Hyponym}: The 3.0 synset is more specific
+\item Other relationships (auto-hyponym, see-also, etc.)
+\end{itemize}
+
+\section{Methodology}
+
+Our conversion pipeline consists of three main stages:
+(1) building the ILI mapping from IndoWordNet synsets,
+(2) converting synsets and lexical entries to LMF format, and
+(3) adding semantic relations with appropriate linking.
+
+\subsection{Building the ILI Mapping}
+
+Each IndoWordNet synset is linked to a PWN 2.1 offset with a relationship type (Direct, Hypernymy, or other).
+We chain this through the 2.1-to-3.0 mapping and then look up the ILI from the Open Multilingual Wordnet English resource.
+
+The mapping produces three categories:
+
+\paragraph{Equal mappings}
+When the IWN-to-PWN21 relationship is ``Direct'' and the PWN21-to-PWN30 mapping is ``equal,'' we assign the ILI directly to the IndoWordNet synset.
+This indicates semantic equivalence.
+
+\paragraph{Hypernym mappings}
+When either relationship is hypernymic, the English concept is more general than the Indian language concept.
+For example, an IWN synset for a specific type of activity might map to a more general English ``activity'' synset.
+
+\paragraph{Duplicate mappings}
+When multiple IWN synsets map to the same ILI, this indicates that the Indian language makes lexical distinctions that English does not.
+For example, Hindi distinguishes between अनुभवी (\textit{anubhavī}, ``experienced through skill'') and भुक्तभोगी (\textit{bhuktabhogī}, ``experienced through suffering''), both mapping to the English concept ``experienced.''
+
+Table~\ref{tab:mapping-stats} shows the distribution of mapping types.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Mapping Type} & \textbf{Count} \\
+\midrule
+Equal & 12,284 \\
+Hypernym & 7,488 \\
+Duplicate & 4,482 \\
+\midrule
+Total mapped & 24,254 \\
+\bottomrule
+\end{tabular}
+\caption{Distribution of ILI mapping types from IndoWordNet to CILI.}
+\label{tab:mapping-stats}
+\end{table}
+
+\subsection{ILI Assignment Strategy}
+
+Since each ILI should be used only once per wordnet (to maintain the one-to-one correspondence between synsets and concepts), we use the following strategy:
+
+\paragraph{Equal mappings} receive the ILI directly on the synset:
+\begin{verbatim}
+<Synset id="iwn-hi-s2349-n" 
+        ili="i105570">
+  <Definition>...</Definition>
+</Synset>
+\end{verbatim}
+
+\paragraph{Hypernym and duplicate mappings} do not receive a direct ILI.
+Instead, we check if another synset already has this ILI through an equal mapping.
+If so, we add a hypernym relation to that synset.
+If not, we create an ``anchor synset''---a synset with the ILI and English definition but no lemmas---and link the Indian language synset as its hyponym.
+
+\begin{verbatim}
+<!-- Anchor synset (English definition) -->
+<Synset id="iwn-hi-omw-en-00935500-a" 
+        ili="i5127">
+  <Definition>having experience...
+  </Definition>
+</Synset>
+
+<!-- Hindi synset linked as hyponym -->
+<Synset id="iwn-hi-s101-a" ili="">
+  <Definition>जो भोग चुका हो...
+  </Definition>
+  <SynsetRelation 
+    target="iwn-hi-omw-en-00935500-a" 
+    relType="hypernym"/>
+</Synset>
+\end{verbatim}
+
+For anchor synsets, we also traverse the Princeton WordNet hypernym hierarchy to find the nearest concept that has an equal mapping in IndoWordNet, linking the anchor to this synset.
+This maintains taxonomic coherence.
+
+\subsection{Relation Mapping}
+
+IndoWordNet contains rich internal semantic relations that we preserve in the conversion.
+Table~\ref{tab:relation-mapping} shows the mapping from IndoWordNet relation types to the standard GWA relation vocabulary.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{IndoWordNet} & \textbf{GWA/OMW-LMF} \\
+\midrule
+hypernymy & hypernym \\
+hyponymy, troponymy & hyponym \\
+mero\_member\_collection & mero\_member \\
+mero\_component\_object & mero\_part \\
+mero\_portion\_mass & mero\_portion \\
+mero\_stuff\_object & mero\_substance \\
+mero\_place\_area & mero\_location \\
+holo\_* & holo\_* (parallel) \\
+also\_see & also \\
+similar & similar \\
+attributes & attribute \\
+entailment & entails \\
+causative & causes \\
+ability\_verb, etc. & other \\
+\bottomrule
+\end{tabular}
+\caption{Mapping of IndoWordNet relations to GWA standard relations.}
+\label{tab:relation-mapping}
+\end{table}
+
+Language-specific relations without standard equivalents (ability\_verb, capability\_verb, function\_verb, modifies\_verb, modifies\_noun) are mapped to ``other.''
+
+\section{Results}
+
+We successfully converted all 18 IndoWordNet languages to OMW-LMF format.
+Table~\ref{tab:language-stats} shows statistics for selected languages.
+
+
+\input{../build/results.tex}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Language} & \textbf{Synsets} & \textbf{Lemmas} & \textbf{Relations} \\
+\midrule
+Assamese & 14,958 & 29,432 & 25,815 \\
+Bengali & -- & -- & -- \\
+Hindi & -- & -- & -- \\
+Kannada & -- & -- & -- \\
+Malayalam & -- & -- & -- \\
+Marathi & -- & -- & -- \\
+Tamil & -- & -- & -- \\
+Telugu & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{Statistics for selected IndoWordNet languages after conversion. (To be filled with complete run data.)}
+\label{tab:language-stats}
+\end{table}
+
+The ILI coverage varies by mapping type:
+\begin{itemize}
+\item 8,227 synsets (55\%) have direct ILI assignment (equal)
+\item 597 synsets (4\%) link to existing equal synsets (hypernym)
+\item 3,192 synsets (21\%) link to anchor synsets (duplicate)
+\item 2,942 synsets (20\%) have no mapping
+\end{itemize}
+
+\subsection{Validation}
+
+We validated the conversion by:
+\begin{enumerate}
+\item Loading generated LMF files with the standard \texttt{wn} Python library
+\item Verifying that known synsets (e.g., ``tree'' पेड़) have correct ILI assignments
+\item Checking that hypernym paths are coherent
+\item Confirming that internal relations are preserved
+\end{enumerate}
+
+\section{Discussion}
+
+\subsection{Lexical Gaps and Language-Specific Concepts}
+
+The duplicate mappings reveal interesting cases where Indian languages make distinctions that English does not lexicalize.
+For example, we found 2,068 groups of IndoWordNet synsets that map to the same English concept, including:
+\begin{itemize}
+\item 1,719 pairs (two Indian concepts per English concept)
+\item 288 triples
+\item 53 quadruples
+\item Higher multiplicities for some concepts
+\end{itemize}
+
+These cases represent valuable linguistic data about conceptual distinctions in Indian languages.
+
+\subsection{Missing Mappings}
+
+Approximately 20\% of synsets could not be mapped to ILI.
+Analysis shows these fall into several categories:
+\begin{itemize}
+\item Synsets added to IndoWordNet without PWN links
+\item PWN 2.1 synsets that were deleted in PWN 3.0
+\item Synsets with non-standard relationship types
+\end{itemize}
+
+Future work could address these through manual curation or by proposing new ILI entries.
+
+\subsection{Data Quality Issues}
+
+We encountered some data quality issues in the source IndoWordNet data:
+\begin{itemize}
+\item Malformed entries where glosses were incorrectly parsed as lemmas
+\item Inconsistent relationship annotations
+\item A small number of entries with unknown relation types
+\end{itemize}
+
+These were handled automatically where possible and flagged for manual review otherwise.
+
+\section{Related Work}
+
+Previous efforts to integrate Indian language wordnets with global resources include the ELRA distribution of Hindi WordNet and partial conversions for specific languages.
+Our work is the first comprehensive conversion of all 18 IndoWordNet languages to OMW-LMF with ILI mappings.
+
+The methodology for handling hypernymic and duplicate mappings builds on work in wordnet alignment \cite{daude2003mapping} and the principles established for the Open Multilingual Wordnet \cite{bond2013linking}.
+
+\section{Conclusion}
+
+We have presented the conversion of IndoWordNet to OMW-LMF format with ILI mappings, enabling integration with the Global WordNet Grid.
+Our methodology handles the complexities of version mapping and preserves the rich lexical distinctions present in Indian languages.
+
+The converted wordnets are available at [URL to be added] and will be submitted for inclusion in the Open Multilingual Wordnet.
+
+\section*{Acknowledgments}
+
+We thank the IndoWordNet team at IIT Bombay for creating and maintaining this valuable resource, and the developers of the pyiwn library for providing programmatic access.
+
+\bibliography{references}
+\bibliographystyle{acl_natbib}
+
+\appendix
+
+\section{Mapping Pipeline}
+
+The conversion pipeline consists of the following scripts:
+\begin{enumerate}
+\item \texttt{map2ili.py}: Builds ILI mappings from IndoWordNet via PWN 2.1 $\rightarrow$ 3.0 $\rightarrow$ ILI chain
+\item \texttt{iwn2omw.py}: Converts to OMW-LMF format with relations
+\item \texttt{test\_lmf.py}: Validates generated wordnets
+\end{enumerate}
+
+All code is available at [GitHub URL].
+
+\end{document}
