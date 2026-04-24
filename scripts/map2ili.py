@@ -2,6 +2,7 @@ import wn
 from collections import defaultdict as dd
 import yaml
 import argparse
+from validation import validate_all_mappings, print_validation_summary
 
 IWN_EN_DATA = 'etc/IWN-En/data/english-hindi-linked-fixed.tsv'
 PWN_MAP_DIR = 'etc/mappings-upc-2007/mapping-21-30/'
@@ -230,7 +231,7 @@ def detect_and_mark_dupes(entries, map2130, ewn, issues):
         
         if synset:
             ili = synset.ili
-            entry['ili'] = ili.id if ili else None
+            entry['ili'] = ili or None
             if not ili:
                 issues['missing_ili'].append({
                     'iwn_id': entry['iwn_id'],
@@ -339,7 +340,7 @@ def build_final_mapping(entries, map2130, ewn, issues):
         if synset:
             ili = synset.ili
             if ili:
-                iwn_to_ili[rel][iwn_key] = ili.id
+                iwn_to_ili[rel][iwn_key] = ili
                 stats[rel] += 1
             else:
                 stats['missing_ili'] += 1
@@ -405,128 +406,6 @@ def write_issues(issues, filename='build/iwn_issues.yaml'):
         print(f"    {key}: {count}")
 
 
-def validate_mappings(entries, ewn, sample_size=None):
-    """
-    Validate ILI mappings against OMW-EN by checking lemma and gloss overlap.
-    
-    Args:
-        entries: List of entry dicts from load_iwn_map()
-        ewn: wn.Wordnet instance for omw-en:1.4
-        sample_size: If set, validate only a random sample
-    """
-    import random
-    
-    def normalize_lemma(lemma):
-        if '(' in lemma:
-            lemma = lemma.split('(')[0]
-        return lemma.strip().replace('_', ' ').lower()
-    
-    def gloss_similarity(g1, g2):
-        if not g1 or not g2:
-            return 0.0
-        w1 = set(g1.lower().split()) - {'a','an','the','of','to','in','for','on','with','as','by','or','and','is','are','be'}
-        w2 = set(g2.lower().split()) - {'a','an','the','of','to','in','for','on','with','as','by','or','and','is','are','be'}
-        if not w1 or not w2:
-            return 0.0
-        return len(w1 & w2) / len(w1 | w2)
-    
-    # Filter entries that have ILI mappings
-    mapped = [e for e in entries if e.get('ili')]
-    
-    if sample_size and len(mapped) > sample_size:
-        mapped = random.sample(mapped, sample_size)
-    
-    stats = {
-        'total': len(mapped),
-        'validated': 0,
-        'lemma_exact': 0, 'lemma_partial': 0, 'lemma_mismatch': 0,
-        'gloss_high': 0, 'gloss_medium': 0, 'gloss_low': 0,
-        'likely_errors': [],
-    }
-    
-    print(f"\nValidating {len(mapped)} mappings against OMW-EN...")
-    
-    for entry in mapped:
-        try:
-            ili = ewn.ili(entry['ili'])
-            synsets = ili.synsets()
-            if not synsets:
-                continue
-            
-            # Get OMW-EN synset
-            omw_ss = next((ss for ss in synsets if ss.lexicon().id() == 'omw-en'), synsets[0])
-            
-            stats['validated'] += 1
-            
-            # Compare lemmas
-            tsv_lemmas = {normalize_lemma(l) for l in entry['english_lemmas'].split(', ')}
-            omw_lemmas = {normalize_lemma(w.lemma()) for w in omw_ss.words()}
-            
-            if tsv_lemmas == omw_lemmas:
-                stats['lemma_exact'] += 1
-                lemma_ok = True
-            elif tsv_lemmas & omw_lemmas:
-                stats['lemma_partial'] += 1
-                lemma_ok = True
-            else:
-                stats['lemma_mismatch'] += 1
-                lemma_ok = False
-            
-            # Compare glosses
-            sim = gloss_similarity(entry['english_gloss'], omw_ss.definition() or '')
-            
-            if sim >= 0.5:
-                stats['gloss_high'] += 1
-            elif sim >= 0.2:
-                stats['gloss_medium'] += 1
-            else:
-                stats['gloss_low'] += 1
-            
-            # Flag likely errors
-            if not lemma_ok and sim < 0.2:
-                stats['likely_errors'].append({
-                    'iwn_id': entry['iwn_id'],
-                    'ili': entry['ili'],
-                    'tsv_lemmas': entry['english_lemmas'],
-                    'omw_lemmas': ', '.join(sorted(omw_lemmas)),
-                    'tsv_gloss': entry['english_gloss'][:80],
-                    'omw_gloss': (omw_ss.definition() or '')[:80],
-                    'similarity': round(sim, 3),
-                })
-                
-        except Exception as e:
-            continue
-    
-    # Print summary
-    v = max(1, stats['validated'])
-    print(f"\n{'='*50}")
-    print("VALIDATION RESULTS")
-    print(f"{'='*50}")
-    print(f"Checked: {stats['validated']} / {stats['total']}")
-    print(f"\nLemma overlap:")
-    print(f"  Exact match:   {stats['lemma_exact']:5d} ({100*stats['lemma_exact']/v:5.1f}%)")
-    print(f"  Partial match: {stats['lemma_partial']:5d} ({100*stats['lemma_partial']/v:5.1f}%)")
-    print(f"  No match:      {stats['lemma_mismatch']:5d} ({100*stats['lemma_mismatch']/v:5.1f}%)")
-    print(f"\nGloss similarity:")
-    print(f"  High (>=50%):  {stats['gloss_high']:5d} ({100*stats['gloss_high']/v:5.1f}%)")
-    print(f"  Medium (20-50%): {stats['gloss_medium']:5d} ({100*stats['gloss_medium']/v:5.1f}%)")
-    print(f"  Low (<20%):    {stats['gloss_low']:5d} ({100*stats['gloss_low']/v:5.1f}%)")
-    
-    if stats['likely_errors']:
-        print(f"\n⚠️  LIKELY ERRORS: {len(stats['likely_errors'])} (no lemma match + low gloss similarity)")
-        print("First 5:")
-        for err in stats['likely_errors'][:5]:
-            print(f"\n  IWN {err['iwn_id']} -> {err['ili']}")
-            print(f"    TSV: {err['tsv_lemmas']}")
-            print(f"    OMW: {err['omw_lemmas']}")
-            print(f"    Gloss sim: {err['similarity']}")
-    
-    print(f"{'='*50}")
-    
-    return stats
-
-
-     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Build IWN to ILI mapping')
     parser.add_argument('--validate', action='store_true',
@@ -545,6 +424,7 @@ if __name__ == '__main__':
     }
     
     print("Loading OMW English...")
+    wn.download('omw-en:1.4')
     ewn = wn.Wordnet(lexicon='omw-en:1.4')
     
     map2130 = load_pwn_map()
@@ -564,7 +444,8 @@ if __name__ == '__main__':
     
     # Optional validation
     if args.validate or args.validate_sample:
-        val_stats = validate_mappings(entries, ewn, sample_size=args.validate_sample)
+        val_stats = validate_all_mappings(entries, ewn, sample_size=args.validate_sample)
+        print_validation_summary(val_stats)
         
         # Write validation issues
         if val_stats['likely_errors']:

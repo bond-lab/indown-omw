@@ -50,7 +50,7 @@ Author: Francis Bond
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#     "wn>=0.9.0",
+#     "wn>=1.1",
 #     "pyiwn",
 #     "pyyaml>=6.0",
 # ]
@@ -264,7 +264,7 @@ def make_lexes(lemmas):
         XML string with all LexicalEntry elements
     """
     lxs = ''
-    for lem_id in sorted(lemmas.keys()):
+    for lem_id in lemmas:
         lem = lemmas[lem_id]['lemma']
         pos = lemmas[lem_id]['pos']
         lxs += f'  <LexicalEntry id="{lem_id}">\n'
@@ -295,10 +295,11 @@ def make_synsets(synsets):
         relations = syn.get('relations', [])
         is_anchor = syn.get('is_anchor', False)
         
-        # ILI attribute - empty string if not set
         ili_attr = f'ili="{ili}"' if ili else 'ili=""'
-        
-        syns += f'  <Synset id="{syn_id}" partOfSpeech="{pos}" {ili_attr}>\n'
+        members = syn.get('members', [])
+        members_attr = f' members="{" ".join(members)}"' if members else ''
+
+        syns += f'  <Synset id="{syn_id}" partOfSpeech="{pos}" {ili_attr}{members_attr}>\n'
         
         # Definition
         if df:
@@ -309,7 +310,7 @@ def make_synsets(synsets):
             syns += f'    <Example>{escape(ex)}</Example>\n'
         
         # Relations
-        for rel_type, target in relations:
+        for rel_type, target in sorted(relations):
             syns += f'    <SynsetRelation target="{target}" relType="{rel_type}"/>\n'
         
         syns += '  </Synset>\n'
@@ -317,21 +318,23 @@ def make_synsets(synsets):
     return syns
 
 
-def get_entries(prefix, iwn, ili_map, ewn):
+def get_entries(prefix, iwn, ili_map, ewn, nearest_ili_cache):
     """
     Extract lexical entries and synsets from IndoWordNet.
-    
+
     This is the main processing function that:
     1. First pass: Creates all IWN synsets with ILI assignments
     2. Second pass: Resolves hypernym links for hyper/dupe synsets
     3. Third pass: Adds IWN internal relations (meronymy, etc.)
-    
+
     Args:
         prefix: Wordnet prefix (e.g., 'iwn-hi')
         iwn: pyiwn.IndoWordNet instance
         ili_map: ILI mapping dict from load_ili_map()
         ewn: OMW English Wordnet for anchor synset creation
-    
+        nearest_ili_cache: Shared dict caching OMW synset ID → nearest equal ILI;
+            persists across language calls to avoid redundant hypernym traversals.
+
     Returns:
         Tuple of (lemmas_dict, synsets_dict, stats_dict, issues_dict)
     """
@@ -346,9 +349,6 @@ def get_entries(prefix, iwn, ili_map, ewn):
     
     # Track synsets that need hypernym links (to be resolved after first pass)
     pending_hypernym_links = []  # (syn_id, ili, rel_type, iwn_key)
-    
-    # Store original IWN synset objects for relation extraction
-    iwn_synset_map = {}  # synset_id -> pyiwn Synset object
     
     stats = {
         'total': 0, 'equal': 0, 'hyper': 0, 'dupe': 0,
@@ -384,9 +384,6 @@ def get_entries(prefix, iwn, ili_map, ewn):
         iwn_key = f"{synset_id}_{pos}"
         syn_id = f'{prefix}-s{synset_id}-{pos}'
         
-        # Store the original synset for relation extraction in third pass
-        iwn_synset_map[synset_id] = synset
-        
         # Track synset ID for uniqueness calculation
         stats['synset_ids'].add(synset_id)
         
@@ -403,8 +400,9 @@ def get_entries(prefix, iwn, ili_map, ewn):
         # Initialize synset
         syns[syn_id]['pos'] = pos
         syns[syn_id]['def'] = synset.gloss()
-        syns[syn_id]['exe'] = "; ".join(synset.examples())
+        syns[syn_id]['exe'] = "; ".join(ex.rstrip('।').rstrip() for ex in synset.examples())
         syns[syn_id]['relations'] = []
+        syns[syn_id]['members'] = []   # sense IDs in IWN order
         syns[syn_id]['iwn_key'] = iwn_key
         syns[syn_id]['iwn_synset_id'] = synset_id
         
@@ -449,36 +447,41 @@ def get_entries(prefix, iwn, ili_map, ewn):
                 lems[lem_id]['sens'].add((sense_id, syn_id))
             else:
                 lems[lem_id]['sens'] = {(sense_id, syn_id)}
+            syns[syn_id]['members'].append(sense_id)
     
     # Build iwn_key -> syn_id mapping for linking
     iwn_key_to_syn_id = {syns[sid]['iwn_key']: sid for sid in syns if 'iwn_key' in syns[sid]}
-    
+
+    # Reverse map ILI -> [equal IWN keys] for O(1) lookup in pass 2
+    equal_ili_to_iwn_keys = dd(list)
+    for eq_iwn_key, eq_ili in ili_map.get('equal', {}).items():
+        equal_ili_to_iwn_keys[eq_ili].append(eq_iwn_key)
+
     # =========================================================================
     # Second pass: Resolve hypernym links for hyper/dupe synsets
     # =========================================================================
     for syn_id, ili, rel_type, iwn_key in pending_hypernym_links:
         target_syn_id = None
-        
+
         # Check if ILI is already used by an 'equal' synset
         if ili in equal_ilis:
-            # Find the equal synset with this ILI
-            for eq_iwn_key, eq_ili in ili_map.get('equal', {}).items():
-                if eq_ili == ili and eq_iwn_key in iwn_key_to_syn_id:
+            for eq_iwn_key in equal_ili_to_iwn_keys.get(ili, []):
+                if eq_iwn_key in iwn_key_to_syn_id:
                     target_syn_id = iwn_key_to_syn_id[eq_iwn_key]
                     stats['hypernym_to_equal'] += 1
                     break
-        
+
         if target_syn_id is None:
             # Need to create an anchor synset
             if ili not in anchor_synsets:
                 # Get English synset from OMW
                 omw_synsets = ewn.synsets(ili=ili)
-                
+
                 if len(omw_synsets) == 1:
                     omw_ss = omw_synsets[0]
                 else:
                     omw_ss = None
-                
+
                 if omw_ss:
                     # Create anchor synset with OMW ID
                     anchor_id = f'{prefix}-{omw_ss.id}'
@@ -494,10 +497,12 @@ def get_entries(prefix, iwn, ili_map, ewn):
                         'is_anchor': True,
                     }
 
-                    # Find nearest IWN hypernym for the anchor
-                    nearest_ili = find_nearest_iwn_hypernym(
-                        ewn, omw_ss.id, equal_ilis
-                    )
+                    # Find nearest IWN hypernym for the anchor (cached across languages)
+                    if omw_ss.id not in nearest_ili_cache:
+                        nearest_ili_cache[omw_ss.id] = find_nearest_iwn_hypernym(
+                            ewn, omw_ss.id, equal_ilis
+                        )
+                    nearest_ili = nearest_ili_cache[omw_ss.id]
 
                     if nearest_ili:
                         nearest_iwn_key = ili_to_iwn[nearest_ili][0][0]
@@ -507,7 +512,6 @@ def get_entries(prefix, iwn, ili_map, ewn):
                             stats['nearest_hypernym_found'] += 1
 
                     anchor_synsets[ili] = anchor_id
-                    #print(f'Created anchor {anchor_id}')
                     stats['anchor_created'] += 1
             
             target_syn_id = anchor_synsets.get(ili)
@@ -516,55 +520,45 @@ def get_entries(prefix, iwn, ili_map, ewn):
         if target_syn_id:
             syns[syn_id]['relations'].append(('hypernym', target_syn_id))
     
-    # Build iwn_synset_id -> syn_id mapping for relation resolution
-    iwn_id_to_syn_id = {}
-    for syn_id in syns:
-        if 'iwn_synset_id' in syns[syn_id]:
-            iwn_id_to_syn_id[syns[syn_id]['iwn_synset_id']] = syn_id
-    
+    # Build iwn_synset_id (str) -> syn_id mapping for relation resolution
+    iwn_id_to_syn_id = {
+        syns[sid]['iwn_synset_id']: sid
+        for sid in syns if 'iwn_synset_id' in syns[sid]
+    }
+
     # =========================================================================
-    # Third pass: Extract and add IWN internal relations
+    # Third pass: Add IWN internal relations
     # =========================================================================
-    for syn_id in syns:
-        if 'iwn_synset_id' not in syns[syn_id]:
-            continue  # Skip anchor synsets
-        
-        iwn_synset_id = syns[syn_id]['iwn_synset_id']
-        if iwn_synset_id not in iwn_synset_map:
+    # Pre-build str_synset_id -> [(gwa_rel, str_target_id)] from pyiwn's internal
+    # dict directly. This avoids 26 pandas isin() calls per synset.
+    src_to_gwa_rels: dict[str, list] = {}
+    for iwn_rel in pyiwn.SynsetRelations:
+        gwa_rel = INDOWNET_TO_GWADOC.get(iwn_rel.value)
+        if not gwa_rel:
             continue
-        
-        source_synset = iwn_synset_map[iwn_synset_id]
-        
-        # Iterate through all IWN relation types
-        for iwn_rel in pyiwn.SynsetRelations:
-            iwn_rel_name = iwn_rel.value  # e.g., 'hypernymy', 'mero_member_collection'
-            
-            # Get target synsets for this relation
-            try:
-                target_synsets = iwn.synset_relation(source_synset, iwn_rel)
-            except Exception:
-                continue
-            
-            if not target_synsets:
-                continue
-            
-            # Map to GWA relation type
-            gwa_rel = INDOWNET_TO_GWADOC.get(iwn_rel_name)
-            if not gwa_rel:
-                continue  # Unknown relation type
-            
-            for target_synset in target_synsets:
-                target_iwn_id = str(target_synset.synset_id())
-                
-                # Find the corresponding LMF synset ID
-                if target_iwn_id in iwn_id_to_syn_id:
-                    target_syn_id = iwn_id_to_syn_id[target_iwn_id]
-                    # Avoid duplicate relations
-                    if (gwa_rel, target_syn_id) not in syns[syn_id]['relations']:
-                        syns[syn_id]['relations'].append((gwa_rel, target_syn_id))
-                    stats['iwn_relations_mapped'] += 1
-                
-                stats['iwn_relations'] += 1
+        for src_id, tgt_ids in iwn._synset_relations_dict.get(iwn_rel.value, {}).items():
+            src_str = str(src_id)
+            stats['iwn_relations'] += len(tgt_ids)
+            for tgt_id in tgt_ids:
+                src_to_gwa_rels.setdefault(src_str, []).append((gwa_rel, str(tgt_id)))
+
+    for syn_id in syns:
+        iwn_synset_id = syns[syn_id].get('iwn_synset_id')
+        if not iwn_synset_id:
+            continue
+        rels = src_to_gwa_rels.get(iwn_synset_id)
+        if not rels:
+            continue
+        existing = set(syns[syn_id]['relations'])
+        new_rels = syns[syn_id]['relations']
+        for gwa_rel, tgt_str in rels:
+            target_syn_id = iwn_id_to_syn_id.get(tgt_str)
+            if target_syn_id:
+                rel = (gwa_rel, target_syn_id)
+                if rel not in existing:
+                    new_rels.append(rel)
+                    existing.add(rel)
+                stats['iwn_relations_mapped'] += 1
     
     # =========================================================================
     # Cleanup: Remove temporary keys before output
@@ -598,16 +592,17 @@ def get_entries(prefix, iwn, ili_map, ewn):
     return lems, syns, stats, issues
 
 
-def make_wn(ver, lang, ili_map, ewn):
+def make_wn(ver, lang, ili_map, ewn, nearest_ili_cache):
     """
     Generate a complete wordnet in LMF format for a given language.
-    
+
     Args:
         ver: Version string (e.g., '1.0')
         lang: pyiwn.Language enum value
         ili_map: ILI mapping dict
         ewn: OMW English Wordnet
-    
+        nearest_ili_cache: Shared cache dict for hypernym traversal results.
+
     Returns:
         Tuple of (prefix, xml_string, stats_dict, issues_dict)
     """
@@ -616,12 +611,12 @@ def make_wn(ver, lang, ili_map, ewn):
     lang_name = str(lang)[9:].lower()  # Extract from "Language.hindi"
     lang_code = LANGUAGES[lang_name]
     prefix = f'iwn-{lang_code}'
-    
+
     print(f"\n{'='*60}")
     print(f"Processing {lang_name.title()} ({lang_code})")
     print('='*60)
-    
-    lems, syns, stats, issues = get_entries(prefix, iwn, ili_map, ewn)
+
+    lems, syns, stats, issues = get_entries(prefix, iwn, ili_map, ewn, nearest_ili_cache)
     
     # Add language info to stats
     stats['lang_name'] = lang_name.title()
@@ -789,11 +784,18 @@ def main():
     all_stats = []
     all_issues = {}
     all_synset_ids = {}  # lang_code -> set of IWN synset IDs
-    
+
+    # Cache OMW synset ID -> nearest equal ILI across all languages to avoid
+    # redundant hypernym path traversals for shared anchor synsets.
+    nearest_ili_cache = {}
+
     # Process all IndoWordNet languages
     for lang in pyiwn.Language:
         version = '1.0'
-        prefix, new_wn, stats, issues = make_wn(version, lang=lang, ili_map=ili_map, ewn=ewn)
+        prefix, new_wn, stats, issues = make_wn(
+            version, lang=lang, ili_map=ili_map, ewn=ewn,
+            nearest_ili_cache=nearest_ili_cache,
+        )
         
         # Collect stats
         all_stats.append(stats)

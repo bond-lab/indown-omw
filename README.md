@@ -15,7 +15,9 @@ Hindi–English mapping file.  The build pipeline:
    - **hyper** – IWN synset is a hyponym of the English concept
    - **dupe** – multiple IWN synsets map to the same ILI (lexical distinctions
      that English conflates)
-3. Writes one LMF XML file per language (`build/iwn-{lang}-1.0.xml`).
+3. Writes one LMF XML file per language (`build/iwn-{lang}-1.0.xml`), with
+   the `members` attribute on each `<Synset>` listing sense IDs in the
+   original IndoWordNet lemma order (head word first).
 
 Each output file is a self-contained
 [WN-LMF 1.1](https://globalwordnet.github.io/schemas/) lexicon, ready for
@@ -54,7 +56,7 @@ The script is idempotent: external data is only downloaded once.
 |------|---------|
 | `scripts/fix_malformed_tsv.py` | Patches split lines and a bad relation tag in the IWN-En TSV |
 | `scripts/map2ili.py` | Maps IWN synset IDs to ILIs via PWN 2.1→3.0 offsets; detects duplicates |
-| `scripts/validation.py` | Lemma and gloss overlap checks (used by `map2ili.py --validate`) |
+| `scripts/validation.py` | Lemma and gloss overlap helpers imported by `map2ili.py --validate` |
 | `scripts/iwn2omw.py` | Converts all 18 IWN languages to WN-LMF 1.1 XML |
 
 ## Validate mappings
@@ -71,11 +73,11 @@ uv run --with-requirements requirements.txt scripts/map2ili.py --validate-sample
 ## Tests
 
 ```bash
-uv run tests/test_indown.py
+uv run --with pytest --with "wn>=1.1" pytest tests/
 ```
 
 `tests/test_indown.py` loads the generated Hindi LMF file and checks specific
-synsets for correct ILI assignments, lemma lists, definitions, and examples.
+synsets for correct ILI assignments, lemma sets, definitions, and examples.
 Add new test cases to `TEST_CASES` in that file to cover additional languages
 or synset properties.
 
